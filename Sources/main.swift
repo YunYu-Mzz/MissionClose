@@ -47,6 +47,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(submenu("Updates", [checkNow, autoUpdateItem]))
         menu.addItem(withTitle: "Reveal Diagnostics Log", action: #selector(revealLog), keyEquivalent: "")
             .target = self
+        menu.addItem(withTitle: "Write Read-Only Diagnostics", action: #selector(writeProbe), keyEquivalent: "")
+            .target = self
         menu.addItem(withTitle: "About MissionClose", action: #selector(showWelcome), keyEquivalent: "")
             .target = self
         loginItem.target = self
@@ -137,6 +139,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         NSWorkspace.shared.activateFileViewerSelecting([Diagnostics.logURL])
     }
 
+    @objc private func writeProbe() {
+        // Runs in the already-running app, not a new shell-launched process with different TCC attribution.
+        Probe.run()
+        NSWorkspace.shared.activateFileViewerSelecting([Probe.outURL])
+    }
+
     @objc private func showWelcome() {
         WelcomeWindow.shared.show()
     }
@@ -144,6 +152,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func openAccessibilitySettings() {
         NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!)
     }
+}
+
+// Local diagnostic: `open -n -a MissionClose.app --args --probe` dumps accessibility info and exits.
+if CommandLine.arguments.contains("--probe") {
+    Probe.run()
+    exit(0)
 }
 
 let app = NSApplication.shared

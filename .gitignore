@@ -3,3 +3,18 @@ dist/
 # Local self-signed code signing identity (private key), created by build.sh
 signing/
 .DS_Store
+
+# Local diagnostics, backups, credentials, and signing material
+backups/
+*.log
+MissionClose-probe*.txt
+probe-*.txt
+test-results.txt
+.env
+.env.*
+*.p12
+*.pfx
+*.pem
+*.key
+*.keychain
+*.keychain-db

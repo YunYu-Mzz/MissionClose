@@ -15,6 +15,18 @@ extension AXUIElement {
     var title: String? { value(kAXTitleAttribute) as? String }
     var windows: [AXUIElement] { value(kAXWindowsAttribute) as? [AXUIElement] ?? [] }
 
+    func element(_ attribute: String) -> AXUIElement? {
+        guard let v = value(attribute), CFGetTypeID(v) == AXUIElementGetTypeID() else { return nil }
+        return (v as! AXUIElement)
+    }
+
+    /// Optional private API. If it disappears, known CG IDs cannot safely be resolved through AX.
+    var windowID: CGWindowID? {
+        guard let getWindow = AXWindowID.getWindow else { return nil }
+        var id: CGWindowID = 0
+        return getWindow(self, &id) == .success && id != 0 ? id : nil
+    }
+
     /// Frame in AX (top-left origin) global coordinates.
     var frame: CGRect? {
         guard let p = value(kAXPositionAttribute), let s = value(kAXSizeAttribute),
@@ -29,13 +41,38 @@ extension AXUIElement {
 
     /// Presses one of a window's title bar buttons, e.g. kAXCloseButtonAttribute.
     func pressButton(_ attribute: String) -> Bool {
-        guard let button = value(attribute), CFGetTypeID(button) == AXUIElementGetTypeID() else { return false }
-        return (button as! AXUIElement).press()
+        guard let button = element(attribute) else {
+            Diagnostics.log("pressButton \(attribute): the window has no such button")
+            return false
+        }
+        let result = AXUIElementPerformAction(button, kAXPressAction as CFString)
+        if result == .success { return true }
+        // Pressing close often tears the window down before the app can answer, so the call reports
+        // .cannotComplete / .invalidUIElement even though it worked. If the window is gone, count it as done.
+        if attribute == kAXCloseButtonAttribute && (result == .cannotComplete || result == .invalidUIElement) {
+            var role: AnyObject?
+            let readResult = AXUIElementCopyAttributeValue(self, kAXRoleAttribute as CFString, &role)
+            if AXActionResult.closeSucceeded(press: result, windowRead: readResult) {
+                Diagnostics.log("pressButton \(attribute): AXError \(result.rawValue), but the window is gone; counted as success")
+                return true
+            }
+        }
+        Diagnostics.log("pressButton \(attribute): AXError \(result.rawValue)")
+        return false
     }
 
     func set(_ attribute: String, _ flag: Bool) -> Bool {
         AXUIElementSetAttributeValue(self, attribute as CFString, (flag ? kCFBooleanTrue : kCFBooleanFalse)!) == .success
     }
+}
+
+private enum AXWindowID {
+    typealias GetWindow = @convention(c) (AXUIElement, UnsafeMutablePointer<CGWindowID>) -> AXError
+    static let getWindow: GetWindow? = {
+        guard let handle = dlopen(nil, RTLD_LAZY),
+              let symbol = dlsym(handle, "_AXUIElementGetWindow") else { return nil }
+        return unsafeBitCast(symbol, to: GetWindow.self)
+    }()
 }
 
 /// Lets AXUIElement be used as a dictionary key (CFEqual/CFHash semantics).

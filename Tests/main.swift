@@ -1,4 +1,5 @@
 import Foundation
+import ApplicationServices
 
 // Plain assertion-based tests, run by tools/test.sh and by CI. No XCTest, to keep the build
 // dependency-free (swiftc only, no Xcode project).
@@ -68,6 +69,42 @@ check(!WindowMatching.matchesElided(label: "Report.pdf", title: "Report.pdf"),
 check(WindowMatching.matchesElided(label: "…settings.json", title: "~/Projects/app/settings.json"),
       "handles a label elided only at the front")
 
+print("Window identity")
+let owners = [
+    WindowCandidate(title: "WeChat", appName: "Browser", size: size(1500, 1000), processID: 10, windowID: 100),
+    WindowCandidate(title: "微信", appName: "微信", size: size(1500, 1000), processID: 20, windowID: 200,
+                    bundleID: "com.tencent.xinWeChat", appAliases: ["WeChat"]),
+]
+check(WindowMatching.bestMatch(label: "WeChat", thumbnailAspect: 1.5, in: owners, processID: 20, windowID: 200) == 1,
+      "real window ID beats a misleading title in another app")
+check(WindowMatching.bestMatch(label: "WeChat", thumbnailAspect: 1.5, in: owners, processID: 20) == 1,
+      "localized app aliases match only within the owning process")
+check(WindowMatching.bestMatch(label: "WeChat", thumbnailAspect: 1.5, in: owners, windowID: 999) == nil,
+      "a missing window ID never falls back to a different window")
+check(WindowMatching.bestMatch(label: "WeChat", thumbnailAspect: 1.5,
+                               in: [WindowCandidate(title: "WeChat", processID: 20)],
+                               processID: 20, windowID: 200) == nil,
+      "failed AX window-ID reads cannot downgrade a known CG identity to title matching")
+check(WindowMatching.bestMatch(label: "", thumbnailAspect: 1.5, in: owners, processID: 20, windowID: 200) == 1,
+      "window ID works even without a title")
+check(WindowMatching.bestMatch(label: "WeChat", thumbnailAspect: 1.5, in: owners, processID: 10, windowID: 200) == nil,
+      "window ID cannot override a contradictory owner PID")
+check(WindowMatching.bestMatch(label: "WeChat", thumbnailAspect: 1.5, in: owners, bundleID: "com.tencent.xinWeChat") == 1,
+      "bundle identifier constrains localized-name fallback")
+let identical = [WindowCandidate(title: "Untitled", size: size(800, 600)),
+                 WindowCandidate(title: "Untitled", size: size(800, 600))]
+check(WindowMatching.bestMatch(label: "Untitled", thumbnailAspect: 1.333, in: identical) == nil,
+      "indistinguishable windows are rejected instead of picking the first")
+check(WindowMatching.sameFrame(CGRect(x: 10, y: 20, width: 400, height: 300),
+                               CGRect(x: 11, y: 20, width: 401, height: 299)), "thumbnail bounds tolerate pixel rounding")
+check(!WindowMatching.sameFrame(CGRect(x: 10, y: 20, width: 400, height: 300),
+                                CGRect(x: 40, y: 20, width: 400, height: 300)), "same-size windows at different positions are distinct")
+print("AXActionResult")
+check(AXActionResult.closeSucceeded(press: .success, windowRead: .success), "successful AX press is accepted")
+check(AXActionResult.closeSucceeded(press: .cannotComplete, windowRead: .invalidUIElement), "invalidated window after close is accepted")
+check(!AXActionResult.closeSucceeded(press: .cannotComplete, windowRead: .cannotComplete), "a hung app is not a closed window")
+check(!AXActionResult.closeSucceeded(press: .cannotComplete, windowRead: .apiDisabled), "denied access is not a closed window")
+check(!AXActionResult.closeSucceeded(press: .actionUnsupported, windowRead: .invalidUIElement), "unsupported close remains a failure")
 print("UpdateCheck")
 check(UpdateCheck.isNewer("0.3.0", than: "0.2.1"), "0.3.0 is newer than 0.2.1")
 check(UpdateCheck.isNewer("0.10.0", than: "0.9.9"), "0.10.0 is newer than 0.9.9 (not string order)")

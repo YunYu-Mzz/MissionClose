@@ -96,7 +96,14 @@ final class Controller {
         for element in MissionControl.thumbnails(in: mc) {
             guard let frame = element.frame else { continue }
             let key = ElementKey(element: element)
-            let panel = thumbs[key]?.panel ?? WindowButtonsPanel(size: size)
+            let previous = thumbs[key]?.panel
+            let panel: WindowButtonsPanel
+            if let previous, previous.size == size {
+                panel = previous
+            } else {
+                previous?.orderOut(nil)
+                panel = WindowButtonsPanel(size: size)
+            }
             panel.place(on: frame, corner: corner)
             next[key] = Thumb(key: key, element: element, frame: frame, panel: panel)
         }
@@ -230,9 +237,18 @@ final class Controller {
 
     private func perform(_ action: WindowAction, on thumb: Thumb, quitApp: Bool) {
         if action == .close, quitApp, Settings.confirmQuit, !confirmQuit(thumb) { return }
-        let cached = windowIndex ?? []
-        let fresh = WindowIndex.all()
-        guard let target = WindowIndex.match(thumb.element, in: cached) ?? WindowIndex.match(thumb.element, in: fresh) else {
+        // A queued click may outlive the overview or its thumbnail. Never act on that stale event.
+        guard AXIsProcessTrusted(), MissionControl.root() != nil, thumbs[thumb.key] != nil else { return }
+        let identity = WindowIndex.identity(of: thumb.element)
+        let fresh = WindowIndex.all(processID: identity.processID)
+        // Keep the old title only for the SAME live AX window. A cached window that has closed
+        // must never beat a fresh one with an identical title.
+        let current = fresh.map { live -> WindowRef in
+            guard let cached = windowIndex?.first(where: { CFEqual($0.window, live.window) }) else { return live }
+            return WindowRef(app: live.app, window: live.window, title: cached.title, size: live.size,
+                             windowID: live.windowID, appAliases: live.appAliases)
+        }
+        guard let target = WindowIndex.match(thumb.element, in: current, identity: identity) else {
             Diagnostics.logFailure(action: "\(action)", label: thumb.element.title,
                                    thumbnailSize: thumb.element.frame?.size, windows: fresh, matched: nil)
             NSSound.beep()
@@ -252,8 +268,8 @@ final class Controller {
             let others = fresh.filter {
                 $0.app.processIdentifier == target.app.processIdentifier && !CFEqual($0.window, window)
             }
-            others.forEach { _ = $0.window.pressButton(kAXCloseButtonAttribute) }
-            ok = !others.isEmpty
+            let results = others.map { $0.window.pressButton(kAXCloseButtonAttribute) }
+            ok = results.allSatisfy { $0 }
         case .fullScreen:
             // Mission Control aborts a full-screen transition, so leave it first: pressing the thumbnail
             // does what clicking it would (exit and bring that window forward), then go full screen.

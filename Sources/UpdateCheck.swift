@@ -3,8 +3,8 @@ import AppKit
 /// Checks GitHub for a newer release: when you click Updates → Check Now, or once a day if you've
 /// turned on Check Automatically (off by default). MissionClose makes no other network connections.
 enum UpdateCheck {
-    private static let latestAPI = URL(string: "https://api.github.com/repos/beqaabu/MissionClose/releases/latest")!
-    private static let releasesPage = URL(string: "https://github.com/beqaabu/MissionClose/releases/latest")!
+    private static let latestAPI = URL(string: "https://api.github.com/repos/YunYu-Mzz/MissionClose/releases/latest")!
+    private static let releasesPage = URL(string: "https://github.com/YunYu-Mzz/MissionClose/releases/latest")!
     private static let cask = "missionclose"
     private static let interval: TimeInterval = 24 * 60 * 60
 
@@ -22,7 +22,8 @@ enum UpdateCheck {
 
     /// Installed with Homebrew? Then updating means `brew upgrade`, not a download.
     static var installedWithHomebrew: Bool {
-        ["/opt/homebrew/Caskroom/\(cask)", "/usr/local/Caskroom/\(cask)"].contains { FileManager.default.fileExists(atPath: $0) }
+        // This fork has no Homebrew cask. An upstream installation must not redirect fork updates.
+        false
     }
 
     /// Starts (or stops) the daily background check to match the setting. Safe to call repeatedly.
@@ -68,7 +69,7 @@ enum UpdateCheck {
                     show(title: "MissionClose \(latest) is available",
                          message: installedWithHomebrew
                             ? "You have \(currentVersion). Update with:\n\nbrew upgrade --cask \(cask)"
-                            : "You have \(currentVersion). Updates keep your settings and permissions.",
+                            : "You have \(currentVersion). Settings are retained; Accessibility permission may need to be granted again.",
                          latest: latest)
                 } else if userInitiated {
                     show(title: "You're up to date", message: "MissionClose \(currentVersion) is the latest version.", latest: nil)

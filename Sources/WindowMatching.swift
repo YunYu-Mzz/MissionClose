@@ -9,22 +9,46 @@ struct WindowCandidate {
     let liveTitle: String
     let appName: String
     let size: CGSize
+    let processID: Int32?
+    let windowID: UInt32?
+    let bundleID: String?
+    let appAliases: [String]
 
-    init(title: String, liveTitle: String? = nil, appName: String = "", size: CGSize = .zero) {
+    init(title: String, liveTitle: String? = nil, appName: String = "", size: CGSize = .zero,
+         processID: Int32? = nil, windowID: UInt32? = nil, bundleID: String? = nil, appAliases: [String] = []) {
         self.title = title
         self.liveTitle = liveTitle ?? title
         self.appName = appName
         self.size = size
+        self.processID = processID
+        self.windowID = windowID
+        self.bundleID = bundleID
+        self.appAliases = appAliases
     }
 }
 
 enum WindowMatching {
+    static func sameFrame(_ lhs: CGRect, _ rhs: CGRect) -> Bool {
+        abs(lhs.minX - rhs.minX) <= 2 && abs(lhs.minY - rhs.minY) <= 2
+            && abs(lhs.width - rhs.width) <= 2 && abs(lhs.height - rhs.height) <= 2
+    }
     /// Mission Control labels a thumbnail with the window's title, or the app's name when a window has
     /// none. Returns the index of the best candidate, or nil when nothing plausibly matches.
     ///
     /// Rules are tried in order of confidence; ties are broken by whichever window's shape is closest
     /// to the thumbnail's.
-    static func bestMatch(label: String, thumbnailAspect: CGFloat, in candidates: [WindowCandidate]) -> Int? {
+    static func bestMatch(label: String, thumbnailAspect: CGFloat, in candidates: [WindowCandidate],
+                          processID: Int32? = nil, windowID: UInt32? = nil, bundleID: String? = nil) -> Int? {
+        let eligible = candidates.indices.filter {
+            (processID == nil || candidates[$0].processID == processID)
+                && (bundleID == nil || candidates[$0].bundleID == bundleID)
+        }
+        // A system window ID is stronger than any title or shape. Never substitute a different
+        // window if that exact window has gone away or is absent from the AX tree.
+        if let windowID {
+            let exact = eligible.filter { candidates[$0].windowID == windowID }
+            return exact.count == 1 ? exact[0] : nil
+        }
         guard !label.isEmpty else { return nil }
         let rules: [(WindowCandidate) -> Bool] = [
             { $0.title == label },
@@ -39,12 +63,17 @@ enum WindowMatching {
             // "beqaabu/MissionClose: Close w…from Mission Control on macOS".
             { matchesElided(label: label, title: $0.title) },
             { matchesElided(label: label, title: $0.liveTitle) },
-            { !$0.appName.isEmpty && $0.appName == label },
+            { (!$0.appName.isEmpty && $0.appName == label) || $0.appAliases.contains(label) },
         ]
         for rule in rules {
-            let matches = candidates.indices.filter { rule(candidates[$0]) }
+            let matches = eligible.filter { rule(candidates[$0]) }
             guard !matches.isEmpty else { continue }
-            return matches.min { closeness(candidates[$0], thumbnailAspect) < closeness(candidates[$1], thumbnailAspect) }
+            let ranked = matches.sorted { closeness(candidates[$0], thumbnailAspect) < closeness(candidates[$1], thumbnailAspect) }
+            if ranked.count > 1,
+               abs(closeness(candidates[ranked[0]], thumbnailAspect) - closeness(candidates[ranked[1]], thumbnailAspect)) < 0.02 {
+                return nil // identical titles/shapes are ambiguous, not a reason to close the first one
+            }
+            return ranked[0]
         }
         return nil
     }
