@@ -113,5 +113,60 @@ check(!UpdateCheck.isNewer("0.2.1", than: "0.2.1"), "the same version is not new
 check(!UpdateCheck.isNewer("0.2.0", than: "0.2.1"), "an older version is not newer")
 check(UpdateCheck.isNewer("0.3", than: "0.2.9"), "handles a two-part version")
 
+print("Layout refresh")
+var refresh = LayoutRefresh()
+refresh.request(at: 0)
+check(refresh.advance(at: 0.1, overviewVisible: true, ready: true) == nil,
+      "rapid closes are coalesced before refreshing")
+check(refresh.advance(at: 0.3, overviewVisible: true, ready: false) == nil,
+      "a held mouse button or pending close postpones the refresh")
+check(refresh.advance(at: 0.4, overviewVisible: true, ready: true) == .dismiss,
+      "a confirmed close starts one overview exit")
+check(refresh.advance(at: 0.5, overviewVisible: true, ready: true) == nil,
+      "never toggle again before observing the overview exit")
+check(refresh.advance(at: 0.6, overviewVisible: false, ready: true) == nil,
+      "an observed exit starts the animation settling period")
+check(refresh.advance(at: 0.8, overviewVisible: false, ready: true) == nil,
+      "wait for the exit animation rather than blindly toggling twice")
+check(refresh.advance(at: 1.0, overviewVisible: false, ready: true) == .reopen,
+      "reopen once after the confirmed exit has settled")
+check(refresh.advance(at: 1.1, overviewVisible: true, ready: true) == nil && !refresh.isTransitioning,
+      "a reopened overview ends the refresh without another toggle")
+
+refresh.request(at: 2)
+_ = refresh.advance(at: 2.1, overviewVisible: false, ready: true)
+check(refresh.advance(at: 3, overviewVisible: true, ready: true) == nil,
+      "a user's natural exit cancels a queued refresh across sessions")
+refresh.request(at: 4)
+_ = refresh.advance(at: 4.3, overviewVisible: true, ready: true)
+_ = refresh.advance(at: 4.4, overviewVisible: false, ready: true)
+refresh.cancel()
+check(refresh.advance(at: 5, overviewVisible: false, ready: true) == nil && !refresh.isTransitioning,
+      "Escape, clicks or swipes during refresh prevent reopening")
+refresh.request(at: 6)
+_ = refresh.advance(at: 6.3, overviewVisible: true, ready: true)
+check(refresh.advance(at: 9, overviewVisible: true, ready: true) == nil && !refresh.isTransitioning,
+      "a failed exit times out instead of accidentally closing a later overview")
+refresh.request(at: 10)
+_ = refresh.advance(at: 10.3, overviewVisible: true, ready: true)
+_ = refresh.advance(at: 10.4, overviewVisible: false, ready: true)
+check(refresh.advance(at: 10.5, overviewVisible: true, ready: true) == nil && !refresh.isTransitioning,
+      "manual re-entry during the wait is left alone")
+
+print("Close confirmation")
+var removal = RemovalConfirmation(now: 0)
+check(removal.observe(removed: false, at: 0.1) == .waiting,
+      "a save dialog or cancelled close is not a removed window")
+check(removal.observe(removed: true, at: 0.2) == .waiting,
+      "one missing-window sample cannot trigger a refresh")
+_ = removal.observe(removed: nil, at: 0.3)
+check(removal.observe(removed: true, at: 0.4) == .waiting,
+      "unknown evidence resets the consecutive-removal requirement")
+check(removal.observe(removed: true, at: 0.5) == .removed,
+      "two consecutive confirmed removals permit cleanup and refresh")
+var cancelledClose = RemovalConfirmation(now: 0)
+check(cancelledClose.observe(removed: false, at: 3.1) == .timedOut,
+      "a window that stays open gets its buttons back after the deadline")
+
 print(failures == 0 ? "\nAll tests passed." : "\n\(failures) test(s) failed.")
 exit(failures == 0 ? 0 : 1)

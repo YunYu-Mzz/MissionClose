@@ -33,9 +33,20 @@ enum MissionControl {
     }
 
     /// The space each display is showing. Private CoreGraphics API; empty if it is unavailable.
-    private static func currentSpaceIDs() -> Set<Int> {
+    static func currentSpaceIDs() -> Set<Int> {
         guard let displays = CGSCopyManagedDisplaySpaces(CGSMainConnectionID()) as? [[String: Any]] else { return [] }
         return Set(displays.compactMap { ($0["Current Space"] as? [String: Any])?["id64"] as? Int })
+    }
+
+    /// Refresh only the all-windows overview. App Exposé belongs to the frontmost app and
+    /// cannot safely be restored by launching Mission Control after that app quits.
+    static func supportsLayoutRefresh(_ root: AXUIElement) -> Bool {
+        root.identifier == "mc" || root.identifier == "mc.display"
+    }
+
+    @discardableResult
+    static func toggle() -> Bool {
+        NSWorkspace.shared.open(URL(fileURLWithPath: "/System/Applications/Mission Control.app"))
     }
 
     /// Thumbnails are identified "<bundle id>.space.<space id>". The overview's tree also lists windows
