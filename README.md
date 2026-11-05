@@ -48,6 +48,8 @@ SIGN_IDENTITY='签名身份名称或 SHA-1' INSTALL=1 ./build-local.sh
 
 ## 使用
 
+默认在后台运行，**不显示顶部菜单栏图标**。需要调整设置或退出时，从访达或 Spotlight 再次打开 MissionClose，点击 **Settings…**。其中的 **Show Menu Bar Icon** 可随时恢复图标，选择会在重启后保留。
+
 在 **系统设置 → 隐私与安全性 → 辅助功能** 中添加安装后的 MissionClose，并开启权限。欢迎窗口应显示 `Accessibility access granted`。若旧条目仍对应旧版本，先移除旧条目，再添加新 App。
 
 打开调度中心，把鼠标移到窗口缩略图上：

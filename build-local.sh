@@ -43,7 +43,7 @@ fi
 
 if [[ "${INSTALL:-0}" == "1" ]]; then
   if pgrep -f '^/Users/[^/]+/Applications/MissionClose[.]app/Contents/MacOS/MissionClose([[:space:]]|$)' >/dev/null; then
-    echo "请先从菜单栏退出 MissionClose，再安装，避免运行中的旧版本与新签名混用。" >&2
+    echo "请先重新打开 MissionClose，从 Settings… → Quit MissionClose 退出，再安装。" >&2
     exit 1
   fi
   echo "==> 安装到 ~/Applications"

@@ -1,6 +1,6 @@
 import Foundation
 
-/// User preferences, stored in UserDefaults and changed from the menu bar menu.
+/// User preferences, changed from the settings window or optional menu bar icon.
 enum Settings {
     enum Corner: String, CaseIterable {
         case topLeft, topRight
@@ -13,6 +13,12 @@ enum Settings {
     }
 
     private static let defaults = UserDefaults.standard
+
+    /// Run quietly by default; reopening the app always provides access to settings.
+    static var showMenuBarIcon: Bool {
+        get { defaults.bool(forKey: "showMenuBarIcon") }
+        set { defaults.set(newValue, forKey: "showMenuBarIcon") }
+    }
 
     static var corner: Corner {
         get { defaults.string(forKey: "corner").flatMap(Corner.init) ?? .topLeft }

@@ -8,6 +8,7 @@ final class WelcomeWindow: NSObject, NSWindowDelegate {
     private var timer: Timer?
     private let statusLabel = NSTextField(labelWithString: "")
     private let actionButton = NSButton()
+    var onShowSettings: ((NSView) -> Void)?
 
     static let shared = WelcomeWindow()
 
@@ -37,7 +38,7 @@ final class WelcomeWindow: NSObject, NSWindowDelegate {
         self.window = window
 
         refresh()
-        // Closes itself once permission is granted, so there's no "now what?" moment.
+        // Keep permission state current while this window is visible.
         let timer = Timer(timeInterval: 0.8, repeats: true) { [weak self] _ in self?.refresh() }
         RunLoop.main.add(timer, forMode: .common)
         self.timer = timer
@@ -57,11 +58,11 @@ final class WelcomeWindow: NSObject, NSWindowDelegate {
         content.addSubview(title)
 
         let body = NSTextField(wrappingLabelWithString: """
-        Swipe up with three fingers, hover a window, and its close, minimize and full-screen buttons appear \
-        in the corner. Hold ⌥ to quit an app instead, or use ⌘W, ⌘M and ⌘Q on the window you're pointing at.
+        Open Mission Control and hover a window to close, minimize or make it full screen. \
+        Hold ⌥ to quit its app, or use ⌘W, ⌘M and ⌘Q.
 
-        MissionClose needs Accessibility access to see Mission Control's thumbnails and press a window's \
-        buttons. It makes no network connections and reads no window contents.
+        Allow Accessibility access so MissionClose can control windows. \
+        Diagnostics stay on your Mac; update checks use GitHub.
         """)
         body.font = .systemFont(ofSize: 13)
         body.textColor = .secondaryLabelColor
@@ -78,10 +79,16 @@ final class WelcomeWindow: NSObject, NSWindowDelegate {
         actionButton.target = self
         actionButton.action = #selector(openSettings)
         actionButton.keyEquivalent = "\r"
-        actionButton.frame = NSRect(x: 130, y: 58, width: 200, height: 32)
+        actionButton.frame = NSRect(x: 62, y: 58, width: 220, height: 32)
         content.addSubview(actionButton)
 
-        let hint = NSTextField(labelWithString: "MissionClose lives in the menu bar.")
+        let settingsButton = NSButton(title: "Settings…", target: self, action: #selector(showSettings(_:)))
+        settingsButton.bezelStyle = .rounded
+        settingsButton.controlSize = .large
+        settingsButton.frame = NSRect(x: 294, y: 58, width: 104, height: 32)
+        content.addSubview(settingsButton)
+
+        let hint = NSTextField(labelWithString: "Runs in the background. Reopen MissionClose for settings.")
         hint.font = .systemFont(ofSize: 11)
         hint.textColor = .tertiaryLabelColor
         hint.alignment = .center
@@ -113,6 +120,10 @@ final class WelcomeWindow: NSObject, NSWindowDelegate {
 
     @objc private func close() {
         window?.close()
+    }
+
+    @objc private func showSettings(_ sender: NSButton) {
+        onShowSettings?(sender)
     }
 
     func windowWillClose(_ notification: Notification) {

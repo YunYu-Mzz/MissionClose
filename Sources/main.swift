@@ -8,7 +8,9 @@ import ServiceManagement
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let controller = Controller()
-    private var statusItem: NSStatusItem!
+    private var statusItem: NSStatusItem?
+    private let menu = NSMenu()
+    private let menuBarItem = NSMenuItem(title: "Show Menu Bar Icon", action: #selector(toggleMenuBarIcon), keyEquivalent: "")
     private let permissionItem = NSMenuItem(title: "", action: #selector(openAccessibilitySettings), keyEquivalent: "")
     private let loginItem = NSMenuItem(title: "Launch at Login", action: #selector(toggleLaunchAtLogin), keyEquivalent: "")
     private var cornerItems: [NSMenuItem] = []
@@ -18,11 +20,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let autoUpdateItem = NSMenuItem(title: "Check Automatically (Daily)", action: #selector(toggleAutomaticUpdates), keyEquivalent: "")
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-
-        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-        statusItem.button?.image = MenuBarIcon.make()
-
-        let menu = NSMenu()
         menu.delegate = self
         permissionItem.target = self
         menu.addItem(permissionItem)
@@ -38,6 +35,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(submenu("Button Corner", cornerItems))
         menu.addItem(submenu("Button Size", sizeItems))
         menu.addItem(submenu("Show Buttons", showItems))
+        menuBarItem.target = self
+        menu.addItem(menuBarItem)
         confirmQuitItem.target = self
         menu.addItem(confirmQuitItem)
         menu.addItem(.separator())
@@ -54,7 +53,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         loginItem.target = self
         menu.addItem(loginItem)
         menu.addItem(withTitle: "Quit MissionClose", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
-        statusItem.menu = menu
+            .target = NSApp
+        updateMenuBarIcon()
+        WelcomeWindow.shared.onShowSettings = { [weak self] anchor in
+            self?.menu.popUp(positioning: nil, at: NSPoint(x: 0, y: anchor.bounds.minY), in: anchor)
+        }
 
         // Turn launch-at-login on the first time the app runs; the menu toggle controls it after that.
         if !UserDefaults.standard.bool(forKey: "didSetUpLoginItem") {
@@ -67,11 +70,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         WelcomeWindow.shared.showIfNeeded()
     }
 
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        WelcomeWindow.shared.show()
+        return false
+    }
+
+    private func updateMenuBarIcon() {
+        if Settings.showMenuBarIcon {
+            if statusItem == nil {
+                let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+                item.button?.image = MenuBarIcon.make()
+                item.button?.setAccessibilityLabel("MissionClose")
+                item.menu = menu
+                statusItem = item
+            }
+        } else if let item = statusItem {
+            NSStatusBar.system.removeStatusItem(item)
+            statusItem = nil
+        }
+    }
+
+    @objc private func toggleMenuBarIcon() {
+        Settings.showMenuBarIcon.toggle()
+        // Finish tracking the menu before removing its status-item host.
+        DispatchQueue.main.async { [weak self] in self?.updateMenuBarIcon() }
+    }
+
     func menuWillOpen(_ menu: NSMenu) {
         permissionItem.title = AXIsProcessTrusted()
             ? "Accessibility: granted"
             : "Accessibility: NOT granted (click to open Settings)"
         loginItem.state = SMAppService.mainApp.status == .enabled ? .on : .off
+        menuBarItem.state = Settings.showMenuBarIcon ? .on : .off
         cornerItems.forEach { $0.state = $0.representedObject as? String == Settings.corner.rawValue ? .on : .off }
         sizeItems.forEach { $0.state = $0.representedObject as? Int == Settings.buttonSize.rawValue ? .on : .off }
         showItems.forEach { $0.state = $0.representedObject as? Bool == Settings.alwaysShow ? .on : .off }
