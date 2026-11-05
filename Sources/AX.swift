@@ -3,6 +3,9 @@ import ApplicationServices
 
 extension AXUIElement {
     func value(_ name: String) -> AnyObject? {
+        // A timeout set on an application element does NOT apply to its child elements.
+        // Bound each individual read, including Dock thumbnails and close buttons.
+        AXUIElementSetMessagingTimeout(self, 0.2)
         var v: AnyObject?
         guard AXUIElementCopyAttributeValue(self, name as CFString, &v) == .success else { return nil }
         return v
@@ -23,6 +26,7 @@ extension AXUIElement {
     /// Optional private API. If it disappears, known CG IDs cannot safely be resolved through AX.
     var windowID: CGWindowID? {
         guard let getWindow = AXWindowID.getWindow else { return nil }
+        AXUIElementSetMessagingTimeout(self, 0.2)
         var id: CGWindowID = 0
         return getWindow(self, &id) == .success && id != 0 ? id : nil
     }
@@ -45,6 +49,7 @@ extension AXUIElement {
             Diagnostics.log("pressButton \(attribute): the window has no such button")
             return false
         }
+        AXUIElementSetMessagingTimeout(button, 0.5)
         let result = AXUIElementPerformAction(button, kAXPressAction as CFString)
         if result == .success { return true }
         // Pressing close often tears the window down before the app can answer, so the call reports

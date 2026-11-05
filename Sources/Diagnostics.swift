@@ -13,8 +13,11 @@ enum Diagnostics {
     }()
 
     private static let maxBytes = 256 * 1024
+    private static let lock = NSLock()
 
     static func log(_ message: String) {
+        lock.lock()
+        defer { lock.unlock() }
         trimIfNeeded()
         let line = "\(formatter.string(from: Date()))  \(message)\n"
         guard let data = line.data(using: .utf8) else { return }

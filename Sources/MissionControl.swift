@@ -23,7 +23,7 @@ enum MissionControl {
     static func root() -> AXUIElement? {
         for pid in hostPIDs {
             let host = AXUIElementCreateApplication(pid)
-            AXUIElementSetMessagingTimeout(host, 0.5) // polled on the main thread; don't let a hung host stall it
+            AXUIElementSetMessagingTimeout(host, 0.2)
             if let group = host.children.first(where: {
                 guard let identifier = $0.identifier, overviewIdentifiers.contains(identifier) else { return false }
                 return !$0.children.isEmpty
@@ -50,13 +50,23 @@ enum MissionControl {
     /// Window thumbnails: the buttons in the overview, skipping Mission Control's Spaces bar
     /// and windows that live on other spaces.
     static func thumbnails(in mc: AXUIElement) -> [AXUIElement] {
-        var result: [AXUIElement] = []
+        thumbnailFrames(in: mc).map(\.element)
+    }
+
+    struct Thumbnail {
+        let element: AXUIElement
+        let frame: CGRect
+    }
+
+    /// Read each thumbnail frame once on the overview worker, never in the input run loop.
+    static func thumbnailFrames(in mc: AXUIElement, isCancelled: () -> Bool = { false }) -> [Thumbnail] {
+        var result: [Thumbnail] = []
         let current = currentSpaceIDs()
         func walk(_ e: AXUIElement, depth: Int) {
-            guard depth < 8 else { return }
+            guard depth < 8, !isCancelled() else { return }
             if let id = e.identifier, id.hasPrefix("mc.spaces") { return }
             if e.role == kAXButtonRole as String, let f = e.frame, f.width > 40, f.height > 40 {
-                if isOnCurrentSpace(e, current: current) { result.append(e) }
+                if isOnCurrentSpace(e, current: current) { result.append(Thumbnail(element: e, frame: f)) }
                 return
             }
             e.children.forEach { walk($0, depth: depth + 1) }

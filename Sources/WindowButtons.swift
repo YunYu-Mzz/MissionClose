@@ -80,6 +80,7 @@ final class WindowButtonsPanel: NSPanel {
         super.init(contentRect: NSRect(x: 0, y: 0, width: s, height: s),
                    styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         isOpaque = false
+        animationBehavior = .none
         backgroundColor = .clear
         hasShadow = false
         hidesOnDeactivate = false
@@ -110,7 +111,8 @@ final class WindowButtonsPanel: NSPanel {
         let s = size
         let x = corner == .topLeft ? thumbAXFrame.minX - s / 3 : thumbAXFrame.maxX + s / 3 - frame.width
         axFrame = CGRect(x: x, y: thumbAXFrame.minY - s / 3, width: frame.width, height: s)
-        setFrame(cocoaRect(axFrame), display: false)
+        let nextFrame = cocoaRect(axFrame)
+        if frame != nextFrame { setFrame(nextFrame, display: false) }
     }
 
     /// The button under a point in AX / CGEvent coordinates.

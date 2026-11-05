@@ -113,5 +113,47 @@ check(!UpdateCheck.isNewer("0.2.1", than: "0.2.1"), "the same version is not new
 check(!UpdateCheck.isNewer("0.2.0", than: "0.2.1"), "an older version is not newer")
 check(UpdateCheck.isNewer("0.3", than: "0.2.9"), "handles a two-part version")
 
+print("Background responsiveness and cancellation")
+func pump(until condition: () -> Bool, timeout: TimeInterval = 2) -> Bool {
+    let deadline = Date().addingTimeInterval(timeout)
+    while !condition(), Date() < deadline {
+        RunLoop.current.run(until: Date().addingTimeInterval(0.005))
+    }
+    return condition()
+}
+let slowWork = BackgroundWork<Bool>(label: "MissionClose.tests.slow-app")
+let workerStarted = DispatchSemaphore(value: 0)
+let releaseWorker = DispatchSemaphore(value: 0)
+var staleResultDelivered = false
+let accepted = slowWork.start({ token in
+    let offMain = !Thread.isMainThread
+    workerStarted.signal()
+    _ = releaseWorker.wait(timeout: .now() + 2)
+    return offMain
+}, completion: { _ in staleResultDelivered = true })
+check(accepted, "accepts the first background operation")
+var started = false
+check(pump(until: {
+    if !started { started = workerStarted.wait(timeout: .now()) == .success }
+    return started
+}), "the simulated slow app starts without blocking the main run loop")
+var inputCallbackRan = false
+DispatchQueue.main.async { inputCallbackRan = true }
+check(pump(until: { inputCallbackRan }, timeout: 0.2) && slowWork.isBusy,
+      "main-queue input can run while an app query is still waiting")
+check(!slowWork.start({ _ in true }, completion: { _ in }),
+      "repeated polling cannot queue up behind a slow app")
+slowWork.cancel()
+check(slowWork.isBusy, "cancellation does not create a second concurrent worker")
+releaseWorker.signal()
+check(pump(until: { !slowWork.isBusy }) && !staleResultDelivered,
+      "a cancelled result cannot revive an overlay from the previous overview")
+var resumedResult = false
+check(slowWork.start({ _ in !Thread.isMainThread }, completion: { wasOffMain in
+    resumedResult = wasOffMain && Thread.isMainThread
+}), "a new overview can start after cancelled work drains")
+check(pump(until: { resumedResult }),
+      "app queries run off-main and UI results return on-main")
+
 print(failures == 0 ? "\nAll tests passed." : "\n\(failures) test(s) failed.")
 exit(failures == 0 ? 0 : 1)

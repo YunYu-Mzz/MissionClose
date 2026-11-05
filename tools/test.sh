@@ -5,5 +5,5 @@ cd "$(dirname "$0")/.."
 
 mkdir -p build
 swiftc -swift-version 5 -o build/Tests \
-  Tests/main.swift Sources/WindowMatching.swift Sources/AXActionResult.swift Sources/UpdateCheck.swift -framework Cocoa
+  Tests/main.swift Sources/WindowMatching.swift Sources/AXActionResult.swift Sources/BackgroundWork.swift Sources/UpdateCheck.swift -framework Cocoa
 exec ./build/Tests

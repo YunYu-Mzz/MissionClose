@@ -27,6 +27,7 @@ final class Controller {
     private var timer: Timer?
     /// Filters clicks; only enabled while Mission Control is open.
     private var tap: CFMachPort?
+    private var clickTapEnabled = false
     private var touchTap: CFMachPort?
     private var swallowingMouseUp = false
     /// Consecutive ticks in which no thumbnail moved. Mission Control animates thumbnails on the way
@@ -36,21 +37,30 @@ final class Controller {
     /// macOS keeps following it if some fingers lift, so it only counts as over once every finger is up.
     private var swiping = false
     private var fingersDown = 0
-    private var isSettled: Bool { stillTicks >= 2 && !swiping }
+    private var isSettled: Bool { stillTicks >= 2 && !swiping && ProcessInfo.processInfo.systemUptime >= resumePollingAt }
     /// Every window on screen, gathered in the background when Mission Control opens so clicks are instant.
     private var windowIndex: [WindowRef]?
-    private var indexGeneration = 0
+    private struct OverviewSnapshot {
+        let trusted: Bool
+        let thumbnails: [MissionControl.Thumbnail]?
+    }
+    private let overviewWork = BackgroundWork<OverviewSnapshot>(label: "MissionClose.overview")
+    private let indexWork = BackgroundWork<[WindowRef]>(label: "MissionClose.window-index")
+    private let actionWork = BackgroundWork<Bool?>(label: "MissionClose.window-action")
+    private var resumePollingAt: TimeInterval = 0
+    private var latestPointer: CGPoint?
+    private var hoverUpdateQueued = false
     /// With "confirm before quitting" on: the thumbnail whose quit is armed, until when.
     private var pendingQuit: (key: ElementKey, until: Date)?
 
     func start() { schedule(after: 0.1) }
 
-    /// Polls fast while Mission Control is open so buttons vanish as soon as it starts closing.
+    /// Only schedules background reads. AX/LaunchServices calls must never block the event-tap run loop.
     private func schedule(after interval: TimeInterval) {
         let t = Timer(timeInterval: interval, repeats: false) { [weak self] _ in
             guard let self else { return }
             self.tick()
-            self.schedule(after: self.thumbs.isEmpty ? 0.1 : 0.03)
+            self.schedule(after: self.thumbs.isEmpty ? 0.2 : 0.06)
         }
         RunLoop.main.add(t, forMode: .common)
         timer = t
@@ -80,21 +90,33 @@ final class Controller {
     }
 
     private func setClickTapEnabled(_ enabled: Bool) {
-        guard let tap, CGEvent.tapIsEnabled(tap: tap) != enabled else { return }
+        guard let tap, clickTapEnabled != enabled else { return }
         CGEvent.tapEnable(tap: tap, enable: enabled)
+        clickTapEnabled = enabled
     }
 
     private func tick() {
-        guard AXIsProcessTrusted() else { return clear() }
+        guard !swiping, ProcessInfo.processInfo.systemUptime >= resumePollingAt else { return }
+        overviewWork.start({ token in
+            let trusted = AXIsProcessTrusted()
+            guard trusted, !token.isCancelled, let mc = MissionControl.root() else {
+                return OverviewSnapshot(trusted: trusted, thumbnails: nil)
+            }
+            return OverviewSnapshot(trusted: true, thumbnails:
+                MissionControl.thumbnailFrames(in: mc, isCancelled: { token.isCancelled }))
+        }, completion: { [weak self] snapshot in self?.apply(snapshot) })
+    }
+
+    private func apply(_ snapshot: OverviewSnapshot) {
+        guard snapshot.trusted else { return clear() }
         installTapsIfNeeded()
-        guard let mc = MissionControl.root() else { return clear() }
+        guard let snapshots = snapshot.thumbnails else { return clear() }
         setClickTapEnabled(true)
 
-        if thumbs.isEmpty && windowIndex == nil { refreshWindowIndex() }
-        let size = CGFloat(Settings.buttonSize.rawValue), corner = Settings.corner
+        let size = CGFloat(Settings.buttonSize.rawValue)
         var next: [ElementKey: Thumb] = [:]
-        for element in MissionControl.thumbnails(in: mc) {
-            guard let frame = element.frame else { continue }
+        for snapshot in snapshots {
+            let element = snapshot.element, frame = snapshot.frame
             let key = ElementKey(element: element)
             let previous = thumbs[key]?.panel
             let panel: WindowButtonsPanel
@@ -104,7 +126,6 @@ final class Controller {
                 previous?.orderOut(nil)
                 panel = WindowButtonsPanel(size: size)
             }
-            panel.place(on: frame, corner: corner)
             next[key] = Thumb(key: key, element: element, frame: frame, panel: panel)
         }
         if let pending = pendingQuit, Date() > pending.until {
@@ -116,14 +137,19 @@ final class Controller {
         stillTicks = moved ? 0 : stillTicks + 1
         thumbs = next
         updateHover(at: CGEvent(source: nil)?.location ?? .zero)
+        // Don't query every app while the system is animating into its overview.
+        if isSettled, windowIndex == nil { refreshWindowIndex() }
     }
 
     /// Buttons show on the thumbnail under the pointer (or on all of them, if configured),
     /// and only while Mission Control is at rest.
     private func updateHover(at point: CGPoint) {
         let alwaysShow = Settings.alwaysShow
+        let settled = isSettled, corner = Settings.corner
         for thumb in thumbs.values {
-            let active = isSettled && (alwaysShow || thumb.frame.union(thumb.panel.axFrame).contains(point))
+            // Hidden panels must not chase every frame of the native overview animation.
+            if settled { thumb.panel.place(on: thumb.frame, corner: corner) }
+            let active = settled && (alwaysShow || thumb.frame.union(thumb.panel.axFrame).contains(point))
             thumb.panel.updateHover(at: active ? point : nil)
             if active, !thumb.panel.isVisible {
                 thumb.panel.quitMode = CGEventSource.flagsState(.combinedSessionState).contains(.maskAlternate)
@@ -137,15 +163,22 @@ final class Controller {
     fileprivate func handle(type: CGEventType, event: CGEvent) -> Bool {
         switch type {
         case .tapDisabledByTimeout, .tapDisabledByUserInput:
-            if let tap, !thumbs.isEmpty { CGEvent.tapEnable(tap: tap, enable: true) }
+            clickTapEnabled = false
+            if !thumbs.isEmpty || swallowingMouseUp { setClickTapEnabled(true) }
             return false
-        case .mouseMoved, .leftMouseDragged:
-            if !thumbs.isEmpty { updateHover(at: event.location) }
+        case .mouseMoved:
+            // Return the system event before drawing/reordering any overlay windows.
+            latestPointer = event.location
+            queueHoverUpdate()
+            return false
+        case .leftMouseDragged:
+            pauseForTransition()
             return false
         case .leftMouseDown:
-            guard let thumb = thumbs.values.first(where: { $0.panel.isVisible && $0.panel.button(at: event.location) != nil }),
+            guard isSettled,
+                  let thumb = thumbs.values.first(where: { $0.panel.isVisible && $0.panel.button(at: event.location) != nil }),
                   let button = thumb.panel.button(at: event.location)
-            else { hideUntilSettled(); return false } // most clicks in Mission Control dismiss it
+            else { pauseForTransition(); return false } // immediately pass ordinary thumbnail clicks to the system
             swallowingMouseUp = true
             let quitApp = event.flags.contains(.maskAlternate)
             DispatchQueue.main.async { [weak self] in self?.perform(button.action, on: thumb, quitApp: quitApp) }
@@ -156,14 +189,14 @@ final class Controller {
                 DispatchQueue.main.async { [weak self] in self?.perform(action, on: thumb, quitApp: quitApp) }
                 return true
             }
-            if !thumbs.isEmpty { hideUntilSettled() } // Esc and other keys dismiss Mission Control
+            pauseForTransition() // Esc and other keys dismiss Mission Control
             return false
         case .scrollWheel: // space switching, or the start of a swipe
-            if !thumbs.isEmpty { hideUntilSettled() }
+            pauseForTransition()
             return false
         case .flagsChanged:
             let quitMode = event.flags.contains(.maskAlternate)
-            thumbs.values.forEach { $0.panel.quitMode = quitMode }
+            DispatchQueue.main.async { [weak self] in self?.thumbs.values.forEach { $0.panel.quitMode = quitMode } }
             return false
         case .leftMouseUp:
             defer { swallowingMouseUp = false }
@@ -209,7 +242,7 @@ final class Controller {
         fingersDown = count
         if count >= 3 {
             swiping = true
-            hideUntilSettled()
+            pauseForTransition()
         } else if count == 0 && swiping {
             swiping = false
             stillTicks = 0 // Mission Control keeps animating after the fingers lift
@@ -218,41 +251,73 @@ final class Controller {
 
     private func hideUntilSettled() {
         stillTicks = 0
-        thumbs.values.forEach { $0.panel.orderOut(nil) }
+        for thumb in thumbs.values where thumb.panel.isVisible { thumb.panel.orderOut(nil) }
+    }
+
+    private func queueHoverUpdate() {
+        guard !hoverUpdateQueued, !thumbs.isEmpty else { return }
+        hoverUpdateQueued = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.hoverUpdateQueued = false
+            if let point = self.latestPointer { self.updateHover(at: point) }
+        }
+    }
+
+    /// Stop old work immediately, but defer AppKit calls until after the event tap returns.
+    /// A short pause lets the native click/exit animation proceed without AX tree polling.
+    private func pauseForTransition() {
+        stillTicks = 0
+        resumePollingAt = ProcessInfo.processInfo.systemUptime + 0.35
+        overviewWork.cancel()
+        actionWork.cancel()
+        indexWork.cancel()
+        windowIndex = nil
+        DispatchQueue.main.async { [weak self] in self?.hideUntilSettled() }
     }
 
     private func refreshWindowIndex() {
-        windowIndex = []
-        indexGeneration += 1
-        let generation = indexGeneration
-        DispatchQueue.global(qos: .userInitiated).async {
-            let index = WindowIndex.all()
-            DispatchQueue.main.async { [weak self] in
-                // Drop results that arrive after Mission Control already closed.
-                if let self, self.indexGeneration == generation, self.windowIndex != nil { self.windowIndex = index }
-            }
-        }
+        indexWork.start({ token in WindowIndex.all(isCancelled: { token.isCancelled }) },
+                        completion: { [weak self] index in self?.windowIndex = index })
     }
 
     private func perform(_ action: WindowAction, on thumb: Thumb, quitApp: Bool) {
+        guard isSettled, thumbs[thumb.key] != nil, !actionWork.isBusy else { return }
         if action == .close, quitApp, Settings.confirmQuit, !confirmQuit(thumb) { return }
-        // A queued click may outlive the overview or its thumbnail. Never act on that stale event.
-        guard AXIsProcessTrusted(), MissionControl.root() != nil, thumbs[thumb.key] != nil else { return }
-        let identity = WindowIndex.identity(of: thumb.element)
-        let fresh = WindowIndex.all(processID: identity.processID)
+        let element = thumb.element
+        let cachedWindows = windowIndex ?? []
+        indexWork.cancel()
+        actionWork.start({ token in
+            Self.execute(action, on: element, quitApp: quitApp, cachedWindows: cachedWindows, token: token)
+        }, completion: { result in
+            if result == false { NSSound.beep() }
+        })
+    }
+
+    /// Potentially slow cross-process work runs only on the action queue. A user leaving the
+    /// overview cancels resolution; recheck cancellation immediately before every side effect.
+    private static func execute(_ action: WindowAction, on element: AXUIElement, quitApp: Bool,
+                                cachedWindows: [WindowRef], token: WorkCancellation) -> Bool? {
+        let deadline = ProcessInfo.processInfo.systemUptime + 2
+        func cancelled() -> Bool { token.isCancelled || ProcessInfo.processInfo.systemUptime >= deadline }
+        guard !cancelled(), AXIsProcessTrusted(), MissionControl.root() != nil else { return nil }
+        let identity = WindowIndex.identity(of: element)
+        let fresh = WindowIndex.all(processID: identity.processID, isCancelled: cancelled)
         // Keep the old title only for the SAME live AX window. A cached window that has closed
         // must never beat a fresh one with an identical title.
         let current = fresh.map { live -> WindowRef in
-            guard let cached = windowIndex?.first(where: { CFEqual($0.window, live.window) }) else { return live }
+            guard let cached = cachedWindows.first(where: { CFEqual($0.window, live.window) }) else { return live }
             return WindowRef(app: live.app, window: live.window, title: cached.title, size: live.size,
                              windowID: live.windowID, appAliases: live.appAliases)
         }
-        guard let target = WindowIndex.match(thumb.element, in: current, identity: identity) else {
-            Diagnostics.logFailure(action: "\(action)", label: thumb.element.title,
-                                   thumbnailSize: thumb.element.frame?.size, windows: fresh, matched: nil)
-            NSSound.beep()
-            return
+        guard !cancelled() else { return nil }
+        guard let target = WindowIndex.match(element, in: current, identity: identity) else {
+            guard !cancelled() else { return nil }
+            Diagnostics.logFailure(action: "\(action)", label: element.title,
+                                   thumbnailSize: element.frame?.size, windows: fresh, matched: nil)
+            return false
         }
+        guard !cancelled(), MissionControl.root() != nil, !cancelled() else { return nil }
         let window = target.window
         let ok: Bool
         switch action {
@@ -265,15 +330,19 @@ final class Controller {
             let others = fresh.filter {
                 $0.app.processIdentifier == target.app.processIdentifier && !CFEqual($0.window, window)
             }
-            let results = others.map { $0.window.pressButton(kAXCloseButtonAttribute) }
+            var results: [Bool] = []
+            for other in others {
+                guard !cancelled() else { return nil }
+                results.append(other.window.pressButton(kAXCloseButtonAttribute))
+            }
             ok = results.allSatisfy { $0 }
         }
         if !ok {
-            Diagnostics.logFailure(action: "\(action)", label: thumb.element.title,
-                                   thumbnailSize: thumb.element.frame?.size, windows: fresh, matched: target)
-            NSSound.beep()
+            Diagnostics.logFailure(action: "\(action)", label: element.title,
+                                   thumbnailSize: element.frame?.size, windows: fresh, matched: target)
         }
         // Observe the system's layout as-is. Never dismiss or reopen Mission Control after closing.
+        return ok
     }
 
     /// First quit request arms the close button; a second one on the same thumbnail within 3 seconds goes through.
@@ -291,11 +360,13 @@ final class Controller {
 
     private func clear() {
         pendingQuit = nil
-        setClickTapEnabled(false)
+        setClickTapEnabled(swallowingMouseUp)
+        overviewWork.cancel()
+        indexWork.cancel()
+        actionWork.cancel()
         windowIndex = nil
-        indexGeneration += 1
         stillTicks = 0
-        thumbs.values.forEach { $0.panel.orderOut(nil) }
+        for thumb in thumbs.values where thumb.panel.isVisible { thumb.panel.orderOut(nil) }
         thumbs.removeAll()
     }
 }

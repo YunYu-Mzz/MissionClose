@@ -26,13 +26,20 @@ enum WindowIndex {
         return found.filter { seen.insert(ElementKey(element: $0)).inserted }
     }
 
-    static func all(processID: pid_t? = nil) -> [WindowRef] {
-        NSWorkspace.shared.runningApplications
+    static func all(processID: pid_t? = nil, isCancelled: () -> Bool = { false }) -> [WindowRef] {
+        let apps: [NSRunningApplication]
+        if let processID {
+            apps = NSRunningApplication(processIdentifier: processID).map { [$0] } ?? []
+        } else {
+            apps = NSWorkspace.shared.runningApplications
+        }
+        return apps
             .filter { app in
                 !app.isTerminated && (processID.map { app.processIdentifier == $0 }
                     ?? (app.activationPolicy == .regular))
             }
             .flatMap { app -> [WindowRef] in
+                guard !isCancelled() else { return [] }
                 let axApp = AXUIElementCreateApplication(app.processIdentifier)
                 AXUIElementSetMessagingTimeout(axApp, 0.3)
                 let bundle = app.bundleURL.flatMap { Bundle(url: $0) }
@@ -40,7 +47,7 @@ enum WindowIndex {
                                bundle?.infoDictionary?["CFBundleDisplayName"] as? String,
                                app.executableURL?.deletingPathExtension().lastPathComponent].compactMap { $0 }
                 return appWindows(axApp).compactMap { w in
-                    guard w.role == kAXWindowRole as String,
+                    guard !isCancelled(), w.role == kAXWindowRole as String,
                           (w.subrole == kAXStandardWindowSubrole as String || w.element(kAXCloseButtonAttribute) != nil),
                           (w.value(kAXMinimizedAttribute) as? Bool) != true,
                           let f = w.frame, f.width > 40, f.height > 40 else { return nil }
