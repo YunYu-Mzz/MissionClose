@@ -151,7 +151,7 @@ final class Controller {
             DispatchQueue.main.async { [weak self] in self?.perform(button.action, on: thumb, quitApp: quitApp) }
             return true
         case .keyDown:
-            // ⌘W / ⌘Q / ⌘M act on the thumbnail under the pointer.
+            // ⌘W / ⌘Q act on the thumbnail under the pointer.
             if let (action, quitApp) = Self.shortcut(event), let thumb = thumb(at: event.location) {
                 DispatchQueue.main.async { [weak self] in self?.perform(action, on: thumb, quitApp: quitApp) }
                 return true
@@ -178,7 +178,7 @@ final class Controller {
         return thumbs.values.first { $0.frame.union($0.panel.axFrame).contains(point) }
     }
 
-    /// ⌘W closes the window, ⌘Q quits the app, ⌘M minimizes, ⌘⌥W closes the app's other
+    /// ⌘W closes the window, ⌘Q quits the app, ⌘⌥W closes the app's other
     /// windows; nil for anything else.
     private static func shortcut(_ event: CGEvent) -> (WindowAction, quitApp: Bool)? {
         let modifiers = event.flags.intersection([.maskCommand, .maskControl, .maskAlternate, .maskShift])
@@ -188,11 +188,10 @@ final class Controller {
         let typed = NSEvent(cgEvent: event)?.charactersIgnoringModifiers?.lowercased() ?? ""
         let letter = typed.unicodeScalars.allSatisfy(\.isASCII) && !typed.isEmpty
             ? typed
-            : [13: "w", 12: "q", 46: "m"][event.getIntegerValueField(.keyboardEventKeycode)] ?? ""
+            : [13: "w", 12: "q"][event.getIntegerValueField(.keyboardEventKeycode)] ?? ""
         switch letter {
         case "w": return withOption ? (.closeOthers, false) : (.close, false)
         case "q" where !withOption: return (.close, true)
-        case "m" where !withOption: return (.minimize, false)
         default: return nil
         }
     }
@@ -261,8 +260,6 @@ final class Controller {
             ok = target.app.terminate()
         case .close:
             ok = window.pressButton(kAXCloseButtonAttribute)
-        case .minimize:
-            ok = window.set(kAXMinimizedAttribute, true) || window.pressButton(kAXMinimizeButtonAttribute)
         case .closeOthers:
             // Every standard window of the same app except this one.
             let others = fresh.filter {
@@ -270,39 +267,13 @@ final class Controller {
             }
             let results = others.map { $0.window.pressButton(kAXCloseButtonAttribute) }
             ok = results.allSatisfy { $0 }
-        case .fullScreen:
-            // Mission Control aborts a full-screen transition, so leave it first: pressing the thumbnail
-            // does what clicking it would (exit and bring that window forward), then go full screen.
-            hideUntilSettled()
-            ok = thumb.element.press()
-            if ok { enterFullScreen(window, of: target.app, deadline: Date().addingTimeInterval(2)) }
         }
         if !ok {
             Diagnostics.logFailure(action: "\(action)", label: thumb.element.title,
                                    thumbnailSize: thumb.element.frame?.size, windows: fresh, matched: target)
             NSSound.beep()
         }
-        // Mission Control updates its thumbnails on its own; the next tick picks up the change.
-    }
-
-    /// Waits for Mission Control to close, then makes the window full screen.
-    private func enterFullScreen(_ window: AXUIElement, of app: NSRunningApplication, deadline: Date) {
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
-            guard let self else { return }
-            if MissionControl.root() != nil {
-                if Date() < deadline { self.enterFullScreen(window, of: app, deadline: deadline) } else { NSSound.beep() }
-                return
-            }
-            // Let the exit animation finish before starting the full-screen one.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                app.activate()
-                _ = window.set(kAXMainAttribute, true)
-                AXUIElementPerformAction(window, kAXRaiseAction as CFString)
-                if !window.set("AXFullScreen", true) && !window.pressButton(kAXFullScreenButtonAttribute) {
-                    NSSound.beep()
-                }
-            }
-        }
+        // Observe the system's layout as-is. Never dismiss or reopen Mission Control after closing.
     }
 
     /// First quit request arms the close button; a second one on the same thumbnail within 3 seconds goes through.

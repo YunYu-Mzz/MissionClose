@@ -8,7 +8,7 @@ enum Settings {
     }
 
     enum ButtonSize: Int, CaseIterable {
-        case small = 16, medium = 20, large = 24
+        case small = 24, medium = 32, large = 40
         var title: String { ["Small", "Medium", "Large"][Self.allCases.firstIndex(of: self)!] }
     }
 

@@ -58,8 +58,8 @@ final class WelcomeWindow: NSObject, NSWindowDelegate {
         content.addSubview(title)
 
         let body = NSTextField(wrappingLabelWithString: """
-        Open Mission Control and hover a window to close, minimize or make it full screen. \
-        Hold ⌥ to quit its app, or use ⌘W, ⌘M and ⌘Q.
+        Open Mission Control and hover a window, then click the large ✕ to close it. \
+        Hold ⌥ to quit its app, or use ⌘W and ⌘Q.
 
         Allow Accessibility access so MissionClose can control windows. \
         Diagnostics stay on your Mac; update checks use GitHub.
