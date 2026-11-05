@@ -118,8 +118,6 @@ final class WindowButtonsPanel: NSPanel {
         super.init(contentRect: NSRect(x: 0, y: 0, width: width, height: s),
                    styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         isOpaque = false
-        isReleasedWhenClosed = false
-        animationBehavior = .none
         backgroundColor = .clear
         hasShadow = false
         hidesOnDeactivate = false

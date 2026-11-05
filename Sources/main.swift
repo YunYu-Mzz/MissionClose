@@ -17,7 +17,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var sizeItems: [NSMenuItem] = []
     private var showItems: [NSMenuItem] = []
     private let confirmQuitItem = NSMenuItem(title: "Confirm Before Quitting Apps", action: #selector(toggleConfirmQuit), keyEquivalent: "")
-    private let refreshLayoutItem = NSMenuItem(title: "Refresh Layout After Closing", action: #selector(toggleLayoutRefresh), keyEquivalent: "")
     private let autoUpdateItem = NSMenuItem(title: "Check Automatically (Daily)", action: #selector(toggleAutomaticUpdates), keyEquivalent: "")
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -40,8 +39,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(menuBarItem)
         confirmQuitItem.target = self
         menu.addItem(confirmQuitItem)
-        refreshLayoutItem.target = self
-        menu.addItem(refreshLayoutItem)
         menu.addItem(.separator())
         let checkNow = NSMenuItem(title: "Check Now…", action: #selector(checkForUpdates), keyEquivalent: "")
         checkNow.target = self
@@ -109,7 +106,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         sizeItems.forEach { $0.state = $0.representedObject as? Int == Settings.buttonSize.rawValue ? .on : .off }
         showItems.forEach { $0.state = $0.representedObject as? Bool == Settings.alwaysShow ? .on : .off }
         confirmQuitItem.state = Settings.confirmQuit ? .on : .off
-        refreshLayoutItem.state = Settings.refreshLayoutAfterClose ? .on : .off
         autoUpdateItem.state = UserDefaults.standard.bool(forKey: UpdateCheck.Key.automatic) ? .on : .off
     }
 
@@ -142,10 +138,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func toggleConfirmQuit() {
         Settings.confirmQuit.toggle()
-    }
-
-    @objc private func toggleLayoutRefresh() {
-        Settings.refreshLayoutAfterClose.toggle()
     }
 
     @objc private func toggleLaunchAtLogin() {

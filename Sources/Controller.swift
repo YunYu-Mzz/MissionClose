@@ -42,24 +42,6 @@ final class Controller {
     private var indexGeneration = 0
     /// With "confirm before quitting" on: the thumbnail whose quit is armed, until when.
     private var pendingQuit: (key: ElementKey, until: Date)?
-    private struct PendingClose {
-        let target: WindowRef
-        let thumbnailKey: ElementKey?
-        let requireTermination: Bool
-        let wasOnScreen: Bool
-        var confirmation: RemovalConfirmation
-    }
-    private var pendingCloses: [ElementKey: PendingClose] = [:]
-    /// Dock can retain the AX thumbnail after its real window has gone. Never resurrect its buttons.
-    private var retiredThumbnails = Set<ElementKey>()
-    private var nextCloseCheck: TimeInterval = 0
-    private var layoutRefresh = LayoutRefresh()
-    private var refreshContext: (spaces: Set<Int>, frontmostPID: pid_t?)?
-    private var sessionSpaces: Set<Int>?
-
-    private var suppressedThumbnails: Set<ElementKey> {
-        retiredThumbnails.union(pendingCloses.values.compactMap(\.thumbnailKey))
-    }
 
     func start() { schedule(after: 0.1) }
 
@@ -68,7 +50,7 @@ final class Controller {
         let t = Timer(timeInterval: interval, repeats: false) { [weak self] _ in
             guard let self else { return }
             self.tick()
-            self.schedule(after: self.thumbs.isEmpty && !self.layoutRefresh.isTransitioning ? 0.1 : 0.03)
+            self.schedule(after: self.thumbs.isEmpty ? 0.1 : 0.03)
         }
         RunLoop.main.add(t, forMode: .common)
         timer = t
@@ -76,8 +58,7 @@ final class Controller {
 
     private func installTapsIfNeeded() {
         if tap == nil {
-            let mask = [CGEventType.leftMouseDown, .leftMouseUp, .rightMouseDown, .otherMouseDown,
-                        .mouseMoved, .leftMouseDragged, .keyDown, .scrollWheel,
+            let mask = [CGEventType.leftMouseDown, .leftMouseUp, .mouseMoved, .leftMouseDragged, .keyDown, .scrollWheel,
                         .flagsChanged]
                 .reduce(CGEventMask(0)) { $0 | (1 << $1.rawValue) }
             tap = makeTap(mask: mask, options: .defaultTap, callback: eventTapCallback)
@@ -106,25 +87,15 @@ final class Controller {
     private func tick() {
         guard AXIsProcessTrusted() else { return clear() }
         installTapsIfNeeded()
-        let root = MissionControl.root()
-        if let sessionSpaces, sessionSpaces != MissionControl.currentSpaceIDs() { cancelCloseRefresh() }
-        if advanceLayoutRefresh(root: root) { return }
-        guard let mc = root else { return clear() }
+        guard let mc = MissionControl.root() else { return clear() }
         setClickTapEnabled(true)
-
-        let spaces = MissionControl.currentSpaceIDs()
-        if let sessionSpaces, sessionSpaces != spaces { cancelCloseRefresh() }
-        sessionSpaces = spaces
-        checkClosedWindows(in: mc)
 
         if thumbs.isEmpty && windowIndex == nil { refreshWindowIndex() }
         let size = CGFloat(Settings.buttonSize.rawValue), corner = Settings.corner
-        let suppressed = suppressedThumbnails
         var next: [ElementKey: Thumb] = [:]
         for element in MissionControl.thumbnails(in: mc) {
             guard let frame = element.frame else { continue }
             let key = ElementKey(element: element)
-            guard !suppressed.contains(key) else { continue }
             let previous = thumbs[key]?.panel
             let panel: WindowButtonsPanel
             if let previous, previous.size == size {
@@ -140,7 +111,7 @@ final class Controller {
             next[pending.key]?.panel.armed = false
             pendingQuit = nil
         }
-        for (key, old) in thumbs where next[key] == nil { old.panel.close() }
+        for (key, old) in thumbs where next[key] == nil { old.panel.orderOut(nil) }
         let moved = next.count != thumbs.count || next.contains { $0.value.frame != thumbs[$0.key]?.frame }
         stillTicks = moved ? 0 : stillTicks + 1
         thumbs = next
@@ -166,21 +137,15 @@ final class Controller {
     fileprivate func handle(type: CGEventType, event: CGEvent) -> Bool {
         switch type {
         case .tapDisabledByTimeout, .tapDisabledByUserInput:
-            if let tap, !thumbs.isEmpty || layoutRefresh.isTransitioning || swallowingMouseUp {
-                CGEvent.tapEnable(tap: tap, enable: true)
-            }
+            if let tap, !thumbs.isEmpty { CGEvent.tapEnable(tap: tap, enable: true) }
             return false
-        case .leftMouseDragged:
-            cancelCloseRefresh()
-            hideUntilSettled()
-            return false
-        case .mouseMoved:
+        case .mouseMoved, .leftMouseDragged:
             if !thumbs.isEmpty { updateHover(at: event.location) }
             return false
         case .leftMouseDown:
             guard let thumb = thumbs.values.first(where: { $0.panel.isVisible && $0.panel.button(at: event.location) != nil }),
                   let button = thumb.panel.button(at: event.location)
-            else { cancelCloseRefresh(); hideUntilSettled(); return false }
+            else { hideUntilSettled(); return false } // most clicks in Mission Control dismiss it
             swallowingMouseUp = true
             let quitApp = event.flags.contains(.maskAlternate)
             DispatchQueue.main.async { [weak self] in self?.perform(button.action, on: thumb, quitApp: quitApp) }
@@ -191,14 +156,9 @@ final class Controller {
                 DispatchQueue.main.async { [weak self] in self?.perform(action, on: thumb, quitApp: quitApp) }
                 return true
             }
-            cancelCloseRefresh()
             if !thumbs.isEmpty { hideUntilSettled() } // Esc and other keys dismiss Mission Control
             return false
-        case .rightMouseDown, .otherMouseDown:
-            cancelCloseRefresh()
-            return false
         case .scrollWheel: // space switching, or the start of a swipe
-            cancelCloseRefresh()
             if !thumbs.isEmpty { hideUntilSettled() }
             return false
         case .flagsChanged:
@@ -249,7 +209,6 @@ final class Controller {
         guard count != fingersDown else { return }
         fingersDown = count
         if count >= 3 {
-            cancelCloseRefresh()
             swiping = true
             hideUntilSettled()
         } else if count == 0 && swiping {
@@ -296,18 +255,13 @@ final class Controller {
             return
         }
         let window = target.window
-        let visibleBefore = Self.visibleWindows()
-        var closeRequests: [(WindowRef, ElementKey?, Bool)] = []
         let ok: Bool
         switch action {
         case .close where quitApp:
             ok = target.app.terminate()
-            if ok { closeRequests.append((target, thumb.key, true)) }
         case .close:
             ok = window.pressButton(kAXCloseButtonAttribute)
-            if ok { closeRequests.append((target, thumb.key, false)) }
         case .minimize:
-            cancelCloseRefresh()
             ok = window.set(kAXMinimizedAttribute, true) || window.pressButton(kAXMinimizeButtonAttribute)
         case .closeOthers:
             // Every standard window of the same app except this one.
@@ -315,14 +269,10 @@ final class Controller {
                 $0.app.processIdentifier == target.app.processIdentifier && !CFEqual($0.window, window)
             }
             let results = others.map { $0.window.pressButton(kAXCloseButtonAttribute) }
-            for (other, succeeded) in zip(others, results) where succeeded {
-                closeRequests.append((other, nil, false))
-            }
             ok = results.allSatisfy { $0 }
         case .fullScreen:
             // Mission Control aborts a full-screen transition, so leave it first: pressing the thumbnail
             // does what clicking it would (exit and bring that window forward), then go full screen.
-            cancelCloseRefresh()
             hideUntilSettled()
             ok = thumb.element.press()
             if ok { enterFullScreen(window, of: target.app, deadline: Date().addingTimeInterval(2)) }
@@ -332,115 +282,7 @@ final class Controller {
                                    thumbnailSize: thumb.element.frame?.size, windows: fresh, matched: target)
             NSSound.beep()
         }
-        let now = ProcessInfo.processInfo.systemUptime
-        for (closedTarget, key, requireTermination) in closeRequests {
-            let wasOnScreen = closedTarget.windowID.map { visibleBefore?[$0] == closedTarget.app.processIdentifier } ?? false
-            pendingCloses[ElementKey(element: closedTarget.window)] = PendingClose(
-                target: closedTarget, thumbnailKey: key, requireTermination: requireTermination,
-                wasOnScreen: wasOnScreen, confirmation: RemovalConfirmation(now: now))
-            if let key { thumbs.removeValue(forKey: key)?.panel.close() }
-        }
-    }
-
-    /// WindowServer keeps closed-but-retained NSWindows in the all-windows list; use visibility.
-    /// A missing/failed snapshot is unknown, never proof of a successful close.
-    private static func visibleWindows() -> [CGWindowID: pid_t]? {
-        guard let list = CGWindowListCopyWindowInfo(.optionOnScreenOnly, kCGNullWindowID) as? [[String: Any]] else { return nil }
-        var result: [CGWindowID: pid_t] = [:]
-        for entry in list {
-            if let id = entry[kCGWindowNumber as String] as? UInt32,
-               let pid = entry[kCGWindowOwnerPID as String] as? Int32 { result[id] = pid }
-        }
-        return result
-    }
-
-    private func checkClosedWindows(in mc: AXUIElement) {
-        let now = ProcessInfo.processInfo.systemUptime
-        guard !pendingCloses.isEmpty, now >= nextCloseCheck else { return }
-        nextCloseCheck = now + 0.1
-        let visible = Self.visibleWindows()
-        var confirmed = false
-        for (key, var pending) in pendingCloses {
-            let target = pending.target
-            let removed: Bool?
-            if target.app.isTerminated {
-                removed = true
-            } else if pending.requireTermination {
-                removed = false // quitting can still be waiting for an unsaved document
-            } else {
-                var value: AnyObject?
-                let read = AXUIElementCopyAttributeValue(target.window, kAXRoleAttribute as CFString, &value)
-                if read == .invalidUIElement {
-                    removed = true
-                } else if pending.wasOnScreen, let id = target.windowID, let visible {
-                    removed = visible[id] != target.app.processIdentifier
-                } else {
-                    removed = read == .success ? false : nil
-                }
-            }
-            switch pending.confirmation.observe(removed: removed, at: now) {
-            case .waiting:
-                pendingCloses[key] = pending
-            case .removed:
-                pendingCloses.removeValue(forKey: key)
-                if let thumbKey = pending.thumbnailKey {
-                    retiredThumbnails.insert(thumbKey)
-                    thumbs.removeValue(forKey: thumbKey)?.panel.close()
-                }
-                confirmed = true
-            case .timedOut:
-                pendingCloses.removeValue(forKey: key) // restore buttons if the user cancelled a save prompt
-            }
-        }
-        if confirmed {
-            refreshWindowIndex()
-            if Settings.refreshLayoutAfterClose, MissionControl.supportsLayoutRefresh(mc) {
-                layoutRefresh.request(at: now)
-            }
-        }
-    }
-
-    private func cancelCloseRefresh() {
-        layoutRefresh.cancel()
-        refreshContext = nil
-        pendingCloses.removeAll()
-    }
-
-    /// Keep the event tap alive across our own exit so Escape, clicks and swipes cancel re-entry.
-    /// Never use delayed blind toggles: observe the exit, allow its animation to finish, then reopen.
-    private func advanceLayoutRefresh(root: AXUIElement?) -> Bool {
-        let wasTransitioning = layoutRefresh.isTransitioning
-        if !Settings.refreshLayoutAfterClose || swiping {
-            layoutRefresh.cancel()
-        }
-        if let root, !MissionControl.supportsLayoutRefresh(root) { layoutRefresh.cancel() }
-        if let context = refreshContext {
-            let frontmost = NSWorkspace.shared.frontmostApplication
-            let sameApp = frontmost?.processIdentifier == context.frontmostPID
-                || frontmost?.bundleIdentifier == "com.apple.exposelauncher"
-            if !sameApp || MissionControl.currentSpaceIDs() != context.spaces { layoutRefresh.cancel() }
-        }
-        let command = layoutRefresh.advance(at: ProcessInfo.processInfo.systemUptime,
-            overviewVisible: root != nil, ready: !swiping && !swallowingMouseUp && pendingCloses.isEmpty)
-        if let command {
-            switch command {
-            case .dismiss:
-                refreshContext = (MissionControl.currentSpaceIDs(), NSWorkspace.shared.frontmostApplication?.processIdentifier)
-                clearThumbnailState()
-            case .reopen:
-                break
-            }
-            if !MissionControl.toggle() {
-                Diagnostics.log("Layout refresh: Mission Control could not be toggled")
-                layoutRefresh.cancel()
-            }
-        }
-        if !layoutRefresh.isTransitioning { refreshContext = nil }
-        if wasTransitioning || layoutRefresh.isTransitioning {
-            setClickTapEnabled(layoutRefresh.isTransitioning || root != nil || swallowingMouseUp)
-            return true
-        }
-        return false
+        // Mission Control updates its thumbnails on its own; the next tick picks up the change.
     }
 
     /// Waits for Mission Control to close, then makes the window full screen.
@@ -477,21 +319,12 @@ final class Controller {
     }
 
     private func clear() {
-        cancelCloseRefresh()
-        clearThumbnailState()
-        // A close may finish before mouse-up. Don't leak that release into a different window.
-        setClickTapEnabled(swallowingMouseUp)
-    }
-
-    private func clearThumbnailState() {
         pendingQuit = nil
-        pendingCloses.removeAll()
-        retiredThumbnails.removeAll()
-        sessionSpaces = nil
+        setClickTapEnabled(false)
         windowIndex = nil
         indexGeneration += 1
         stillTicks = 0
-        thumbs.values.forEach { $0.panel.close() }
+        thumbs.values.forEach { $0.panel.orderOut(nil) }
         thumbs.removeAll()
     }
 }

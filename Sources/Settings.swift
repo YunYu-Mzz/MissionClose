@@ -20,12 +20,6 @@ enum Settings {
         set { defaults.set(newValue, forKey: "showMenuBarIcon") }
     }
 
-    /// Re-enter Mission Control after a confirmed close so the Dock lays out remaining windows.
-    static var refreshLayoutAfterClose: Bool {
-        get { defaults.object(forKey: "refreshLayoutAfterClose") as? Bool ?? true }
-        set { defaults.set(newValue, forKey: "refreshLayoutAfterClose") }
-    }
-
     static var corner: Corner {
         get { defaults.string(forKey: "corner").flatMap(Corner.init) ?? .topLeft }
         set { defaults.set(newValue.rawValue, forKey: "corner") }
